@@ -1,10 +1,82 @@
+import { useEffect, useRef } from 'react'
 import { motion } from 'framer-motion'
-import { Heart, Eye, MessageCircle, DollarSign, Play } from 'lucide-react'
-import { formatNumber, formatCurrency } from '../../hooks/useSheetData'
+import { Heart, Eye, Play } from 'lucide-react'
+import { formatNumber } from '../../hooks/useSheetData'
+
+// Componente para embeds HTML de redes sociales
+function SocialEmbed({ embedCode, platform }) {
+  const containerRef = useRef(null)
+
+  useEffect(() => {
+    if (!embedCode || !containerRef.current) return
+
+    // Insertar el HTML del embed
+    containerRef.current.innerHTML = embedCode
+
+    // Cargar scripts según la plataforma
+    const loadScript = (id, src, callback) => {
+      if (!document.getElementById(id)) {
+        const script = document.createElement('script')
+        script.id = id
+        script.src = src
+        script.async = true
+        script.onload = callback
+        document.body.appendChild(script)
+      } else {
+        callback?.()
+      }
+    }
+
+    // Instagram
+    if (platform === 'instagram' || embedCode.includes('instagram')) {
+      loadScript('instagram-embed-js', 'https://www.instagram.com/embed.js', () => {
+        if (window.instgrm) {
+          window.instgrm.Embeds.process()
+        }
+      })
+    }
+
+    // Facebook
+    if (platform === 'facebook' || embedCode.includes('facebook')) {
+      loadScript('facebook-jssdk', 'https://connect.facebook.net/es_LA/sdk.js#xfbml=1&version=v18.0', () => {
+        if (window.FB) {
+          window.FB.XFBML.parse(containerRef.current)
+        }
+      })
+    }
+
+    // TikTok
+    if (platform === 'tiktok' || embedCode.includes('tiktok')) {
+      loadScript('tiktok-embed-js', 'https://www.tiktok.com/embed.js', () => {
+        // TikTok se auto-procesa
+      })
+    }
+
+  }, [embedCode, platform])
+
+  if (!embedCode) {
+    return (
+      <div className="aspect-video bg-gradient-to-br from-white/5 to-white/10 flex items-center justify-center">
+        <div className="text-center p-4">
+          <Play className="w-10 h-10 text-white/20 mx-auto mb-2" />
+          <p className="text-xs text-white/40">Vista previa no disponible</p>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div 
+      ref={containerRef} 
+      className="bg-white rounded-lg overflow-hidden flex items-center justify-center p-2"
+      style={{ minHeight: '300px', maxHeight: '600px', overflowY: 'auto' }}
+    />
+  )
+}
 
 export function TopPostCard({ 
   post, 
-  type = 'alcance', // 'alcance', 'interaccion', 'views'
+  type = 'alcance',
   platform = 'facebook',
 }) {
   if (!post) return null
@@ -15,6 +87,9 @@ export function TopPostCard({
     interaccion: 'Mayor Interacción',
     views: 'Mayor Views',
   }[type] || 'Top Post'
+
+  const hasEmbed = post.embed_url && post.embed_url.trim() !== ''
+  const hasImage = post.imagen_url && post.imagen_url.trim() !== ''
 
   return (
     <motion.div
@@ -28,18 +103,10 @@ export function TopPostCard({
         {isVideo && <Play className="w-4 h-4 text-white/50" />}
       </div>
 
-      {/* Embed o Imagen */}
-      {post.embed_url ? (
-        <div className="aspect-video bg-black/20">
-          <iframe
-            src={post.embed_url}
-            className="w-full h-full"
-            frameBorder="0"
-            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-            allowFullScreen
-          />
-        </div>
-      ) : post.imagen_url ? (
+      {/* Embed HTML o Imagen */}
+      {hasEmbed ? (
+        <SocialEmbed embedCode={post.embed_url} platform={platform} />
+      ) : hasImage ? (
         <div className="aspect-video bg-black/20">
           <img 
             src={post.imagen_url} 
@@ -56,8 +123,8 @@ export function TopPostCard({
         </div>
       )}
 
-      {/* Descripción */}
-      {post.descripcion && (
+      {/* Descripción solo si no hay embed */}
+      {post.descripcion && !hasEmbed && (
         <div className="px-4 py-3 border-b border-white/10">
           <p className="text-sm text-white/70 line-clamp-2">{post.descripcion}</p>
         </div>
@@ -65,26 +132,15 @@ export function TopPostCard({
 
       {/* Métricas */}
       <div className="p-4 grid grid-cols-2 gap-3">
-        {type === 'alcance' || type === 'interaccion' ? (
+        {type === 'views' ? (
           <>
-            <MetricItem icon={Eye} label="Alcance" value={formatNumber(post.alcance)} />
+            <MetricItem icon={Eye} label="Views" value={formatNumber(post.views)} />
             <MetricItem icon={Heart} label="Interacciones" value={formatNumber(post.interacciones)} />
-            <MetricItem icon={MessageCircle} label="ETR" value={`${post.etr || 0}%`} />
-            {type === 'alcance' && post.cpm && (
-              <MetricItem icon={DollarSign} label="CPM" value={formatCurrency(post.cpm)} />
-            )}
-            {type === 'interaccion' && post.cpe && (
-              <MetricItem icon={DollarSign} label="CPE" value={formatCurrency(post.cpe)} />
-            )}
           </>
         ) : (
           <>
-            <MetricItem icon={Eye} label="Views" value={formatNumber(post.views)} />
-            <MetricItem icon={Play} label="Views 6s" value={formatNumber(post.views_6s)} />
+            <MetricItem icon={Eye} label="Alcance" value={formatNumber(post.alcance)} />
             <MetricItem icon={Heart} label="Interacciones" value={formatNumber(post.interacciones)} />
-            {post.cpv && (
-              <MetricItem icon={DollarSign} label="CPV" value={formatCurrency(post.cpv)} />
-            )}
           </>
         )}
       </div>
@@ -111,7 +167,6 @@ export function TopPostsSection({ posts = [], platform = 'facebook' }) {
 
   const isTikTok = platform === 'tiktok'
   
-  // Encontrar posts por tipo
   const postAlcance = posts.find(p => p.tipo_top === 'alcance')
   const postInteraccion = posts.find(p => p.tipo_top === 'interaccion')
   const postViews = posts.find(p => p.tipo_top === 'views')
