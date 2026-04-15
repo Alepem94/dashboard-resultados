@@ -1,5 +1,4 @@
-En tu vercel.json reemplaza todo el contenido con esto:
-json{
+.json{
   "routes": [
     { "handle": "filesystem" },
     { "src": "/(.*)", "dest": "/index.html" }
