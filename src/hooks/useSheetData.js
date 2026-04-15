@@ -14,6 +14,97 @@ async function fetchSheet(sheetName) {
   return data
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX #1 — Normalización de fechas → siempre retorna "YYYY-MM"
+//
+// Google Sheets exporta la columna "mes" en distintos formatos según cómo
+// esté formateada la celda:
+//   "2025-12"              → texto correcto, pasa tal cual
+//   "2026-01-01 00:00:00"  → fecha con hora (Enero guardado como tipo Fecha)
+//   "2026-01-31 00:00:00"  → fecha fin-de-mes (TopPosts usa el último día)
+//   46023.0                → serial numérico de Excel
+//   Date object            → ya parseado por PapaParse
+// ─────────────────────────────────────────────────────────────────────────────
+function normalizeMonth(val) {
+  if (!val) return null
+
+  if (val instanceof Date && !isNaN(val)) {
+    return val.toISOString().slice(0, 7)
+  }
+
+  const s = String(val).trim()
+
+  // Ya está en formato correcto "YYYY-MM"
+  if (/^\d{4}-\d{2}$/.test(s)) return s
+
+  // Fecha completa "YYYY-MM-DD..." — TopPosts usa el último día del mes
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 7)
+
+  // Serial numérico de Excel (días desde 1899-12-30)
+  if (/^\d{4,5}(\.\d+)?$/.test(s)) {
+    const d = new Date((parseFloat(s) - 25569) * 86400000)
+    return d.toISOString().slice(0, 7)
+  }
+
+  return s
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX #2 — TikTok: normalización de nombres de marca
+//
+// La hoja TikTok usa "LA BOTANERA", "Chamoy", "Pacific Mix" en la columna
+// marca, pero el sistema filtra por los IDs "botanera", "chamoy", "pacific".
+// ─────────────────────────────────────────────────────────────────────────────
+const TIKTOK_BRAND_MAP = {
+  'la botanera': 'botanera',
+  'botanera':    'botanera',
+  'chamoy mega': 'chamoy',
+  'chamoy':      'chamoy',
+  'pacific mix': 'pacific',
+  'pacific':     'pacific',
+}
+
+function normalizeTikTokMarca(val) {
+  if (!val) return val
+  return TIKTOK_BRAND_MAP[String(val).trim().toLowerCase()] ?? val
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX #3 — TopPosts: embed_url viene como HTML de <iframe> completo.
+//
+// El componente PostCard espera solo la URL para usarla como src del iframe.
+// Esta función extrae el src si el valor es un bloque HTML, o lo retorna
+// tal cual si ya es una URL limpia.
+// ─────────────────────────────────────────────────────────────────────────────
+function extractEmbedUrl(val) {
+  if (!val) return null
+  const s = String(val).trim()
+  if (s.startsWith('http') && !s.includes('<iframe')) return s
+  const match = s.match(/src="([^"]+)"/)
+  return match ? match[1] : null
+}
+
+// Normaliza fecha y opcionalmente la marca (solo para TikTok)
+function normalizeRows(rows, { normalizeMarca = false } = {}) {
+  return rows.map(r => ({
+    ...r,
+    mes: normalizeMonth(r.mes),
+    ...(normalizeMarca && r.marca ? { marca: normalizeTikTokMarca(r.marca) } : {}),
+  }))
+}
+
+// Normalización especial para TopPosts: fecha + extracción de embed_url
+function normalizePostRows(rows) {
+  return rows.map(r => ({
+    ...r,
+    mes:       normalizeMonth(r.mes),
+    embed_url: extractEmbedUrl(r.embed_url),
+  }))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Hook principal
+// ─────────────────────────────────────────────────────────────────────────────
 export function useSheetData(marcaId) {
   const [data, setData] = useState({
     empresa: {},
@@ -46,7 +137,6 @@ export function useSheetData(marcaId) {
       const [
         configData,
         marcasData,
-        mesesData,
         fbData,
         igData,
         ttData,
@@ -63,7 +153,6 @@ export function useSheetData(marcaId) {
       ] = await Promise.all([
         fetchSheet('_CONFIG'),
         fetchSheet('_MARCAS'),
-        fetchSheet('_MESES'),
         fetchSheet('Facebook'),
         fetchSheet('Instagram'),
         fetchSheet('TikTok'),
@@ -82,40 +171,56 @@ export function useSheetData(marcaId) {
       // Config global
       const empresa = {}
       configData.forEach(row => {
-        if (row.campo && row.valor) {
-          empresa[row.campo] = row.valor
-        }
+        if (row.campo && row.valor) empresa[row.campo] = row.valor
       })
 
-      // Brand config (desde _MARCAS)
+      // Brand config
       const brand = marcasData.find(b => b.marca_id === marcaId)
       setBrandConfig(brand)
 
-      // Available months (filtrar por marca)
-      const allMonths = new Set()
-      fbData.filter(r => r.marca === marcaId && r.seguidores).forEach(r => allMonths.add(r.mes))
-      igData.filter(r => r.marca === marcaId && r.seguidores).forEach(r => allMonths.add(r.mes))
-      ttData.filter(r => r.marca === marcaId && r.seguidores).forEach(r => allMonths.add(r.mes))
-      
-      const sortedMonths = Array.from(allMonths).sort().reverse()
-      setAvailableMonths(sortedMonths)
+      // Normalizar todas las hojas
+      const fbNorm       = normalizeRows(fbData)
+      const igNorm       = normalizeRows(igData)
+      const ttNorm       = normalizeRows(ttData, { normalizeMarca: true }) // fix marca TikTok
+      const gadsNorm     = normalizeRows(gadsData)
+      const campNorm     = normalizeRows(campanasData)
+      const sentNorm     = normalizeRows(sentimentData)
+      const captNorm     = normalizeRows(capturasData)
+      const compNorm     = normalizeRows(competenciaData)
+      const hallNorm     = normalizeRows(hallazgosData)
+      const obsNorm      = normalizeRows(observacionesData)
+      const gadsCiudNorm = normalizeRows(gadsCiudadesData)
+      const gadsKwNorm   = normalizeRows(gadsKeywordsData)
+      const postNorm     = normalizePostRows(postsData) // fix embed_url + fecha
 
-      // Filter data by marca
+      // availableMonths desde todas las fuentes con datos
+      const allMonths = new Set()
+      const addMonths = (arr) =>
+        arr.filter(r => r.marca === marcaId && r.mes).forEach(r => allMonths.add(r.mes))
+
+      addMonths(fbNorm)
+      addMonths(igNorm)
+      addMonths(ttNorm)    // ahora sí encuentra filas tras el fix de marca
+      addMonths(gadsNorm)
+      addMonths(sentNorm)
+
+      setAvailableMonths(Array.from(allMonths).sort().reverse())
+
       setData({
         empresa,
-        facebook: fbData.filter(r => r.marca === marcaId),
-        instagram: igData.filter(r => r.marca === marcaId),
-        tiktok: ttData.filter(r => r.marca === marcaId),
-        googleAds: gadsData.filter(r => r.marca === marcaId),
-        googleAdsCiudades: gadsCiudadesData.filter(r => r.marca === marcaId),
-        googleAdsKeywords: gadsKeywordsData.filter(r => r.marca === marcaId),
-        campanas: campanasData.filter(r => r.marca === marcaId),
-        topPosts: postsData.filter(r => r.marca === marcaId),
-        sentiment: sentimentData.filter(r => r.marca === marcaId),
-        sentimentCapturas: capturasData.filter(r => r.marca === marcaId),
-        competencia: competenciaData.filter(r => r.marca === marcaId),
-        hallazgos: hallazgosData.filter(r => r.marca === marcaId),
-        observaciones: observacionesData.filter(r => r.marca === marcaId),
+        facebook:          fbNorm.filter(r => r.marca === marcaId),
+        instagram:         igNorm.filter(r => r.marca === marcaId),
+        tiktok:            ttNorm.filter(r => r.marca === marcaId),
+        googleAds:         gadsNorm.filter(r => r.marca === marcaId),
+        googleAdsCiudades: gadsCiudNorm.filter(r => r.marca === marcaId),
+        googleAdsKeywords: gadsKwNorm.filter(r => r.marca === marcaId),
+        campanas:          campNorm.filter(r => r.marca === marcaId),
+        topPosts:          postNorm.filter(r => r.marca === marcaId),
+        sentiment:         sentNorm.filter(r => r.marca === marcaId),
+        sentimentCapturas: captNorm.filter(r => r.marca === marcaId),
+        competencia:       compNorm.filter(r => r.marca === marcaId),
+        hallazgos:         hallNorm.filter(r => r.marca === marcaId),
+        observaciones:     obsNorm.filter(r => r.marca === marcaId),
       })
 
       setLoading(false)
@@ -133,27 +238,17 @@ export function useSheetData(marcaId) {
     loadData()
   }, [loadData])
 
-  return {
-    data,
-    brandConfig,
-    availableMonths,
-    loading,
-    error,
-    refresh: loadData,
-    isRefreshing,
-  }
+  return { data, brandConfig, availableMonths, loading, error, refresh: loadData, isRefreshing }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
 // Utilidades de formato
+// ─────────────────────────────────────────────────────────────────────────────
 export function formatNumber(value) {
   const num = parseFloat(value)
   if (isNaN(num) || value === '' || value === null || value === undefined) return '-'
-  
-  if (num >= 1000000) {
-    return (num / 1000000).toFixed(1) + 'M'
-  } else if (num >= 1000) {
-    return (num / 1000).toFixed(1) + 'K'
-  }
+  if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M'
+  if (num >= 1000) return (num / 1000).toFixed(1) + 'K'
   return num.toLocaleString('es-MX')
 }
 
