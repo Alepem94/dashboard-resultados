@@ -1,5 +1,7 @@
-{
-  "rewrites": [
-    { "source": "/(.*)", destination": "/index.html }
+En tu vercel.json reemplaza todo el contenido con esto:
+json{
+  "routes": [
+    { "handle": "filesystem" },
+    { "src": "/(.*)", "dest": "/index.html" }
   ]
 }
